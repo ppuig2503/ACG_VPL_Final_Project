@@ -3,7 +3,6 @@
 #include "../core/utils.h"
 
 #include <algorithm>
-#include <limits>
 #include <numbers>
 #include <random>
 
@@ -36,25 +35,6 @@ namespace
         return reflected;
     }
 
-    // A zero emitter normal denotes an isotropic point source.
-    Vector3D connectLight(const Intersection& hit, const Vector3D& wo,
-                          const Vector3D& pos, const Vector3D& normal, const Vector3D& weight,
-                          double geometryLimit, const std::vector<Shape*>& objects)
-    {
-        const Vector3D offset = pos - hit.itsPoint;
-        const double distance = offset.length();
-        if (distance <= 2.0 * Epsilon)
-            return Vector3D(0.0);
-
-        const Vector3D wi = offset / distance;
-        const double receiverCos = std::max(0.0, dot(hit.normal, wi));
-        const double emitterCos = normal.lengthSq() == 0.0 ? 1.0 : std::max(0.0, dot(normal, -wi));
-        const double geometry = std::min(geometryLimit, receiverCos * emitterCos / (distance * distance));
-        if (geometry <= 0.0 || Utils::hasIntersection(Ray(hit.itsPoint, wi, 0, Epsilon, distance - Epsilon), objects))
-            return Vector3D(0.0);
-
-        return weight * hit.shape->getMaterial().getReflectance(hit.normal, wo, wi) * geometry;
-    }
 }
 
 VplShader::VplShader(Vector3D bgColor, double maxGeometry_)
@@ -80,13 +60,13 @@ void VplShader::generateVPLs(const std::vector<Shape*>& objList, const std::vect
         const double area = light.getArea();
         Vector3D direction;
         Vector3D flux;
-        if (area > 0.0) {
+        if (dynamic_cast<const PointLightSource*>(&light)) {
+            direction = sampler.getSample(Vector3D(0, chooseHemisphere(generator) ? 1 : -1, 0));
+            flux = light.getIntensity() * (pathWeight * 4.0 * pi);
+        } else if (area > 0.0) {
             const Vector3D n = light.getNormal().normalized();
             direction = sampler.getSample(n);
             flux = light.getIntensity() * (pathWeight * area * 2.0 * pi * std::max(0.0, dot(n, direction)));
-        } else if (light.getNormal().lengthSq() == 0.0) {
-            direction = sampler.getSample(Vector3D(0, chooseHemisphere(generator) ? 1 : -1, 0));
-            flux = light.getIntensity() * (pathWeight * 4.0 * pi);
         } else {
             continue;
         }
@@ -115,37 +95,101 @@ void VplShader::generateVPLs(const std::vector<Shape*>& objList, const std::vect
     }
 }
 
-Vector3D VplShader::computeColor(const Ray& r, const std::vector<Shape*>& objList,
-                                 const std::vector<LightSource*>& lsList) const
+Vector3D VplShader::computeColor(const Ray& r, const std::vector<Shape*>& objList, const std::vector<LightSource*>& lsList) const
 {
-    constexpr size_t maxCameraDepth = 4;
-    Intersection hit;
-    if (r.depth >= maxCameraDepth || !Utils::getClosestIntersection(r, objList, hit))
+    int maxDepth = 4;
+	if (r.depth >= maxDepth) { // too avoid infinite recursion, we stop the recursion at a certain depth
         return bgColor;
-
-    const Material& material = hit.shape->getMaterial();
-    if (material.hasSpecular() || material.hasTransmission())
-        return computeColor(specularBounce(r, hit), objList, lsList);
-
-    Vector3D color(0.0);
-    if (material.isEmissive()) {
-        if (r.depth == 0)
-            return material.getEmissiveRadiance();
-        if (r.isReflectedRay || r.isRefractedRay)
-            color = material.getEmissiveRadiance();
     }
-    if (!material.hasDiffuseOrGlossy())
-        return color;
+    Intersection its;
+    Vector3D wo = -r.d;
 
-    for (const LightSource* light : lsList) {
-        const double area = light->getArea();
-        const Vector3D normal = light->getNormal();
-        const bool point = normal.lengthSq() == 0.0;
-        color += connectLight(hit, -r.d, light->sampleLightPosition(), point ? normal : normal.normalized(),
-                              light->getIntensity() * (point ? 1.0 : area),
-                              std::numeric_limits<double>::infinity(), objList);
+    Vector3D color(0.0, 0.0, 0.0);
+    if (Utils::getClosestIntersection(r, objList, its)) {
+
+        if (its.shape->getMaterial().hasSpecular()) {
+            //MIRROR
+            Vector3D wr = 2 * dot(its.normal, wo) * its.normal - wo;
+            Ray reflectionRay = Ray(its.itsPoint, wr, r.depth + 1);
+			reflectionRay.isReflectedRay = true; // Mark the ray as a reflected ray
+            color = computeColor(reflectionRay, objList, lsList);
+        }
+
+        else if (its.shape->getMaterial().hasTransmission()) {
+            Vector3D normal = its.normal;
+            double mu_t = its.shape->getMaterial().getIndexOfRefraction();
+            if (dot(wo, normal) < 0) {
+                mu_t = 1 / mu_t;
+                normal = -normal;
+            }
+
+            double radicand = 1 - mu_t * mu_t * (1 - dot(normal, wo) * dot(normal, wo));
+            if (radicand >= 0) { // NO total internal reflection, compute the refracted ray
+                Vector3D wt = -mu_t * wo + normal * (mu_t * dot(normal, wo) - sqrt(radicand));
+                Ray refracRay = Ray(its.itsPoint, wt, r.depth + 1);
+				refracRay.isRefractedRay = true; // Mark the ray as a refracted ray
+                color = computeColor(refracRay, objList, lsList);
+            }
+            else { // Total internal reflection, color = Specular reflection, acts like a mirror
+                Vector3D wr = 2 * dot(normal, wo) * normal - wo;
+                Ray reflectionRay = Ray(its.itsPoint, wr, r.depth + 1);
+				reflectionRay.isReflectedRay = true; // Mark the ray as a reflected ray
+                color = computeColor(reflectionRay, objList, lsList);
+            }
+        }
+
+        else if ((its.shape->getMaterial().isEmissive() and r.depth == 0)) {
+            color = its.shape->getMaterial().getEmissiveRadiance();
+        }
+
+        else if (its.shape->getMaterial().hasDiffuseOrGlossy()) {
+			if (r.isReflectedRay || r.isRefractedRay) {
+				color = its.shape->getMaterial().getEmissiveRadiance(); // If the ray is reflected or refracted, return the emissive radiance of the material
+			}
+            // DIRECT RADIANCE (one NEE sample per light)
+            for (const LightSource* light : lsList) {
+                Vector3D y = light->sampleLightPosition();
+                Vector3D wi = y - its.itsPoint;
+                double distance = wi.length();
+                if (distance <= 2 * Epsilon)
+                    continue;
+                Vector3D wi_normalized = wi / distance;
+
+                double G = fmax(0, dot(its.normal, wi_normalized)) / (distance * distance);
+                double pdf = 1.0; // A point source has a fixed position.
+                if (!dynamic_cast<const PointLightSource*>(light)) {
+                    double area = light->getArea();
+                    if (area <= 0.0)
+                        continue;
+                    pdf = 1.0 / area;
+                    G *= fmax(0, dot(light->getNormal().normalized(), -wi_normalized));
+                }
+
+                Ray shadowRay(its.itsPoint, wi_normalized, 0, Epsilon, distance - Epsilon);
+                if (G > 0.0 && !Utils::hasIntersection(shadowRay, objList)) {
+                    Vector3D brdf = its.shape->getMaterial().getReflectance(its.normal, wo, wi_normalized);
+                    color += light->getIntensity() * brdf * G / pdf;
+                }
+            }
+
+            // INDIRECT RADIANCE (connect this hit to each precomputed VPL)
+            for (const VPL& vpl : vplList) {
+                Vector3D wi = vpl.pos - its.itsPoint;
+                double distance = wi.length();
+                if (distance <= 2 * Epsilon)
+                    continue;
+                Vector3D wi_normalized = wi / distance;
+                double G = fmax(0, dot(its.normal, wi_normalized))
+                         * fmax(0, dot(vpl.normal, -wi_normalized)) / (distance * distance);
+                G = std::min(G, maxGeometry);
+
+                Ray shadowRay(its.itsPoint, wi_normalized, 0, Epsilon, distance - Epsilon);
+                if (G > 0.0 && !Utils::hasIntersection(shadowRay, objList)) {
+                    Vector3D brdf = its.shape->getMaterial().getReflectance(its.normal, wo, wi_normalized);
+                    color += vpl.flux * brdf * G;
+                }
+            }
+        }
     }
-    for (const VPL& vpl : vplList)
-        color += connectLight(hit, -r.d, vpl.pos, vpl.normal, vpl.flux, maxGeometry, objList);
     return color;
 }

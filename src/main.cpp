@@ -270,13 +270,13 @@ int main()
     //raytrace(cam, whittedshader, film, myScene.objectsList, myScene.LightSourceList);
     //raytrace(cam, directshader, film, myScene.objectsList, myScene.LightSourceList);
 	//raytrace(cam, areashader, film, myScene.objectsList, myScene.LightSourceList);
-    constexpr int numLightPaths = 640;
+    constexpr int numLightPaths = 64;
     constexpr int maxLightDepth = 4;
-    constexpr double maxGeometry = 1.0;
-    constexpr int vplSamplesPerPixel = 1;
+    constexpr double maxGeometry = 0.1; // Upper bound on the VPL geometry term (scene units^-2).
+    constexpr int spp = 16; // Independent area-light samples per pixel.
     VplShader vplShader(bgColor, maxGeometry);
     vplShader.generateVPLs(*myScene.objectsList, *myScene.LightSourceList, numLightPaths, maxLightDepth);
-    raytrace(cam, &vplShader, film, myScene.objectsList, myScene.LightSourceList, vplSamplesPerPixel);
+    raytrace(cam, &vplShader, film, myScene.objectsList, myScene.LightSourceList, spp);
     //raytrace(cam, pptshader, film, myScene.objectsList, myScene.LightSourceList);
     //raytrace(cam, neeshader, film, myScene.objectsList, myScene.LightSourceList);
     auto stop = high_resolution_clock::now();
