@@ -23,6 +23,7 @@
 #include "shaders/areashader.h"
 #include "shaders/pptshader.h"
 #include "shaders/neeshader.h"
+#include "shaders/vplshader.h"
 
 #include "materials/phong.h"
 #include "materials/emissive.h"
@@ -148,8 +149,8 @@ void buildSceneSphere(Camera*& cam, Film*& film,
    
 }
 
-void raytrace(Camera* &cam, Shader* &shader, Film* &film,
-              std::vector<Shape*>* &objectsList, std::vector<LightSource*>* &lightSourceList)
+void raytrace(Camera* &cam, const Shader* shader, Film* &film,
+              std::vector<Shape*>* &objectsList, std::vector<LightSource*>* &lightSourceList, int spp = 256)
 {
     
     double my_PI = 0.0;
@@ -162,7 +163,6 @@ void raytrace(Camera* &cam, Shader* &shader, Film* &film,
     // Main raytracing loop
     // Out-most loop invariant: we have rendered lin lines
 
-	int spp = 256; //samples per pixel
     for(size_t lin=0; lin<resY; lin++)
     {
         // Show progression 
@@ -241,7 +241,7 @@ int main()
     //Shader* normalshader = new NormalShader(intersectionColor, bgColor); // TASK 4.4 shader
     //Shader* whittedshader = new WhittedShader(intersectionColor, bgColor);
     //Shader* directshader = new DirectShader(intersectionColor, bgColor);
-	Shader* areashader = new AreaShader(intersectionColor, bgColor);
+	//Shader* areashader = new AreaShader(intersectionColor, bgColor);
     //Shader* pptshader = new PptShader(intersectionColor, bgColor);
     //Shader* neeshader = new NeeShader(intersectionColor, bgColor);
     //(... normal, whitted) ...
@@ -269,7 +269,14 @@ int main()
     //raytrace(cam, normalshader, film, myScene.objectsList, myScene.LightSourceList); //TASK 4.4
     //raytrace(cam, whittedshader, film, myScene.objectsList, myScene.LightSourceList);
     //raytrace(cam, directshader, film, myScene.objectsList, myScene.LightSourceList);
-	raytrace(cam, areashader, film, myScene.objectsList, myScene.LightSourceList);
+	//raytrace(cam, areashader, film, myScene.objectsList, myScene.LightSourceList);
+    constexpr int numLightPaths = 640;
+    constexpr int maxLightDepth = 4;
+    constexpr double maxGeometry = 1.0;
+    constexpr int vplSamplesPerPixel = 1;
+    VplShader vplShader(bgColor, maxGeometry);
+    vplShader.generateVPLs(*myScene.objectsList, *myScene.LightSourceList, numLightPaths, maxLightDepth);
+    raytrace(cam, &vplShader, film, myScene.objectsList, myScene.LightSourceList, vplSamplesPerPixel);
     //raytrace(cam, pptshader, film, myScene.objectsList, myScene.LightSourceList);
     //raytrace(cam, neeshader, film, myScene.objectsList, myScene.LightSourceList);
     auto stop = high_resolution_clock::now();
